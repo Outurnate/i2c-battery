@@ -1,56 +1,44 @@
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-
+#include <linux/slab.h>
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
+
+// http://lxr.free-electrons.com/source/drivers/hwmon/sht21.c
+// http://cdn.sparkfun.com/datasheets/Prototyping/MAX17043-MAX17044.pdf
+// http://www.linuxjournal.com/article/7252
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Joseph D <joseph@panicnot42.com>");
 MODULE_DESCRIPTION("test");
 
-static struct i2c_device_id i2cbattery_id[] =
+static int i2c_battery_probe(struct i2c_client* client, const struct i2c_device_id* id)
 {
-  { "i2cbattery", 0 },
+}
+
+// chip data
+struct i2c_battery_data
+{
+  struct mutex update_lock;
+  char valid; // non-zero if valid data
+  unsigned long last_update;
+  u16 battery_percent;
+};
+
+static struct i2c_device_id i2c_battery_id[] =
+{
+  { "i2c_battery", 0 },
   { }
 };
+MODULE_DEVICE_TABLE(i2c, i2c_battery_id); // no idea...
 
-MODULE_DEVICE_TABLE(i2c, i2cbattery_id);
-
-static int i2cbattery_probe(struct i2c_client *client, const struct i2c_device_id *idp)
+// our driver definition
+static struct i2c_driver i2c_battery_driver =
 {
-  // do magic
-  return 0;
-}
-
-static int i2cbattery_remove(struct i2c_client *client)
-{
-  // more magic
-  return 0;
-}
-
-static struct i2c_driver i2cbattery_driver =
-{
-   .driver =
-   {
-      .name = "i2cbattery",
-   },
-   .probe = i2cbattery_probe,
-   .remove = i2cbattery_remove,
-   .id_table = i2cbattery_id,
+  .driver.name = "i2c_battery", // name should match module
+  .probe = i2c_battery_probe, // our probe
+  .id_table = i2c_battery_id, // ties in above table
 };
 
-static int __init i2cbattery_init(void)
-{
-  printk(KERN_INFO "i2c-battery loading");
-  return i2c_add_driver(&i2cbattery_driver);
-}
-
-static void __exit i2cbattery_exit(void)
-{
-  i2c_del_driver(&i2cbattery_driver);
-  printk(KERN_INFO "i2c-battery has gone away");
-}
-
-module_init(i2cbattery_init);
-module_exit(i2cbattery_exit);
+module_i2c_driver(i2c_battery_driver);

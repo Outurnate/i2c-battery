@@ -40,18 +40,121 @@ struct i2c_battery_data
   struct i2c_client* client;
   struct mutex update_lock;
   char valid; // non-zero if valid data
-  unsigned long last_update;
-  u16 battery_percent;
-  u16 voltage;
+  unsigned long last_update; // jiffies of last update
+  u16 voltage; // VCELL
+  u16 soc;     // SOC (state of charge)
+  u16 mode;    // MODE (w only)
+  u16 version; // VERSION
+  u16 config;  // CONFIG
+  u16 command; // COMMAND (w only)
 };
 
+// reads all new data into drvdata
 static int i2c_battery_update_measurements(struct device *dev)
 {
-  return 0; // great success
+  int res = 0;
+  struct i2c_battery_data* data = dev_get_drvdata(dev);
+  struct i2c_client* client = data->client;
+  // these are the commands that will be sent to the chip
+  u8 cmds[] =
+  {
+    REG_VCELL_MSB,
+    REG_VCELL_LSB,
+    REG_SOC_MSB,
+    REG_SOC_LSB,
+    REG_CONFIG_MSB,
+    REG_CONFIG_LSB,
+    REG_VERSION_MSB,
+    REG_VERSION_LSB
+  }; //  TODO: reorder these on little-endian machines (if necessary)
+  // values from chip will be read into here
+  // each line corresponds to a command result
+  u8 values[] =
+  {
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  }; // flip these on LE (definitely necessary)
+  // interleave the data from the two, and configure direction/length
+  struct i2c_msg msgs[] =
+  {
+    {
+      .addr = client->addr,
+      .flags = 0,
+      .len = 2,
+      .buf = &cmds[0]
+    },
+    {
+      .addr = client->addr,
+      .flags = I2C_M_RD,
+      .len = 2,
+      .buf = &values[0]
+    },
+    {
+      .addr = client->addr,
+      .flags = 0,
+      .len = 2,
+      .buf = &cmds[2]
+    },
+    {
+      .addr = client->addr,
+      .flags = I2C_M_RD,
+      .len = 2,
+      .buf = &values[2]
+    },
+    {
+      .addr = client->addr,
+      .flags = 0,
+      .len = 2,
+      .buf = &cmds[4]
+    },
+    {
+      .addr = client->addr,
+      .flags = I2C_M_RD,
+      .len = 2,
+      .buf = &values[4]
+    },
+    {
+      .addr = client->addr,
+      .flags = 0,
+      .len = 2,
+      .buf = &cmds[6]
+    },
+    {
+      .addr = client->addr,
+      .flags = I2C_M_RD,
+      .len = 2,
+      .buf = &values[6]
+    }
+  };
+
+  mutex_lock(&data->update_lock);
+
+  res = i2c_transfer(client->adapter, msgs, 12) - 12; // yeah, this will be a pain to debug
+  // ^ res is wrong, see here https://www.kernel.org/doc/htmldocs/device-drivers/API-i2c-transfer.html
+  if (res < 0)
+    goto bail;
+  data->voltage = *((u16*)&values[0]); // TODO hacky; not endian safe
+  data->soc     = *((u16*)&values[2]); // TODO hacky; not endian safe
+  data->config  = *((u16*)&values[4]); // TODO hacky; not endian safe
+  data->version = *((u16*)&values[6]); // TODO hacky; not endian safe
+  data->last_update = jiffies;
+  data->valid = 1;
+  
+bail:
+  kfree(cmds);
+  mutex_unlock(&data->update_lock);
+
+  return res >= 0 ? 0 : res;
 }
 
 #define show(value)							\
-  static ssize_t i2c_battery_show_##value(struct device* dev, char* buf)\
+  static ssize_t i2c_battery_show_##value(struct device* dev, struct device_attribute *attr, char* buf) \
   {\
     struct i2c_battery_data* data = dev_get_drvdata(dev);\
     int ret;\
@@ -62,8 +165,18 @@ static int i2c_battery_update_measurements(struct device *dev)
   }
 
 show(voltage);
+show(soc);
 
-static SENSOR_DEVICE_ATTR(in0_input, S_IWUSR | S_IRUGO, i2c_battery_show_voltage, NULL, 0);
+static SENSOR_DEVICE_ATTR(in0_input, S_IRUGO, i2c_battery_show_voltage, NULL, 0); // defines in0_input for below
+static DEVICE_ATTR(soc, S_IRUGO, i2c_battery_show_soc, NULL); // define dev_attr_soc
+
+static struct attribute* i2c_battery_attrs[] =
+{
+  &sensor_dev_attr_in0_input.dev_attr.attr, // only register in0_input with hwmon
+  NULL
+};
+
+ATTRIBUTE_GROUPS(i2c_battery); // define i2c_battery_groups
 
 static int i2c_battery_probe(struct i2c_client* client, const struct i2c_device_id* id)
 {
@@ -78,7 +191,8 @@ static int i2c_battery_probe(struct i2c_client* client, const struct i2c_device_
   data->client = client;
   mutex_init(&data->update_lock);
   
-  //hwmon_dev = devm_hwmon_device_register_with_groups(dev, client->name, data, i2c_battery_groups);
+  hwmon_dev = devm_hwmon_device_register_with_groups(dev, client->name, data, i2c_battery_groups); // register hwmon group
+  device_create_file(&data->client->dev, &dev_attr_soc); // register device soc
 
   return PTR_ERR_OR_ZERO(hwmon_dev);
 }

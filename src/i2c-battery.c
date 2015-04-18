@@ -36,6 +36,7 @@ MODULE_DESCRIPTION("test");
 #define REG_COMMAND_LSB   0xFF //  W
 
 // chip data
+// always cpu endian
 struct i2c_battery_data
 {
   struct i2c_client* client;
@@ -206,6 +207,8 @@ bail:
 
 static int i2c_battery_write_settings(struct device *dev)
 {
+  // leave this as a stub until testing is done
+  // if I screw up, I don't want to write garbage to the chip
   return 0;
 }
 
@@ -219,7 +222,7 @@ static int i2c_battery_write_settings(struct device *dev)
       return ret;                                                                                       \
     return sprintf(buf, "%d\n", data->value);                                                           \
   }
-// 5 down, endian?
+
 #define store(value)                                                                                    \
   static ssize_t i2c_battery_store_##value(struct device* dev, struct device_attribute *attr, const char* buf, size_t count) \
   {                                                                                                     \
@@ -240,13 +243,12 @@ store(config);
 store(mode);
 store(command);
 
-
-static SENSOR_DEVICE_ATTR(in0_input, S_IRUGO,           i2c_battery_show_voltage, NULL, 0); // defines in0_input for below
+static SENSOR_DEVICE_ATTR(in0_input, S_IRUGO,           i2c_battery_show_voltage, NULL, 0); // defines sensor_dev_attr_in0_input
 static        DEVICE_ATTR(soc,       S_IRUGO,           i2c_battery_show_soc,     NULL); // define dev_attr_soc
-static        DEVICE_ATTR(version,   S_IRUGO,           i2c_battery_show_version, NULL); // define dev_attr_version
-static        DEVICE_ATTR(config,    S_IRUGO | S_IWUSR, i2c_battery_show_config,  i2c_battery_store_config); // define dev_attr_config
-static        DEVICE_ATTR(mode,                S_IWUSR, NULL,                     i2c_battery_store_mode); // define dev_attr_mode
-static        DEVICE_ATTR(command,             S_IWUSR, NULL,                     i2c_battery_store_command); // define dev_attr_command
+static        DEVICE_ATTR(version,   S_IRUGO,           i2c_battery_show_version, NULL);
+static        DEVICE_ATTR(config,    S_IRUGO | S_IWUSR, i2c_battery_show_config,  i2c_battery_store_config);
+static        DEVICE_ATTR(mode,                S_IWUSR, NULL,                     i2c_battery_store_mode);
+static        DEVICE_ATTR(command,             S_IWUSR, NULL,                     i2c_battery_store_command);
 
 static struct attribute* i2c_battery_attrs[] =
 {
@@ -276,14 +278,15 @@ static int i2c_battery_probe(struct i2c_client* client, const struct i2c_device_
   device_create_file(&data->client->dev, &dev_attr_config);  // register device config
   device_create_file(&data->client->dev, &dev_attr_mode);    // register device mode
   device_create_file(&data->client->dev, &dev_attr_command); // register device command
-
+// TODO finish error handling
   return PTR_ERR_OR_ZERO(hwmon_dev);
 }
 
 // specify the address for the i2c device
+// will register with init
 static struct i2c_board_info i2c_battery_info[] =
 {
-  {  
+  {
     I2C_BOARD_INFO("i2c_battery", I2C_SLAVE_ADDRESS)
   }
 };
@@ -304,4 +307,16 @@ static struct i2c_driver i2c_battery_driver =
   .id_table = i2c_battery_id, // ties in above table
 };
 
-module_i2c_driver(i2c_battery_driver);
+static int __init i2c_battery_init(void)
+{
+  i2c_register_board_info(0, i2c_battery_info, ARRAY_SIZE(i2c_battery_info));
+  return i2c_add_driver(&i2c_battery_driver);
+}
+
+static void __exit i2c_battery_exit(void)
+{
+  i2c_del_driver(&i2c_battery_driver);
+}
+
+module_init(i2c_battery_init);
+module_exit(i2c_battery_exit);

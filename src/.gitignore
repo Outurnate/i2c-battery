@@ -1,3 +1,7 @@
-i2c-battery.mod.c
+*.mod.c
+.*.mod.c
+*.o
+*.ko
+.*o.cmd
 modules.order
 Module.symvers

@@ -10,18 +10,25 @@
 #include <linux/sysfs.h>
 #include <linux/device.h>
 #include <linux/jiffies.h>
+#include <linux/kmod.h>
+// TODO do i need so many headers???
 
+// Main references:
 // http://lxr.free-electrons.com/source/drivers/hwmon/sht21.c
 // http://cdn.sparkfun.com/datasheets/Prototyping/MAX17043-MAX17044.pdf
 // http://www.linuxjournal.com/article/7252
 // https://www.kernel.org/doc/Documentation/power/power_supply_class.txt
+// There are a lot more, but these I referred to most
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Joseph D <joseph@panicnot42.com>");
-MODULE_DESCRIPTION("test");
+MODULE_DESCRIPTION("I2C driver for MAX17043/44 chip");
 
-#define I2C_SLAVE_ADDRESS 0x36
+#define I2C_SLAVE_ADDRESS 0x36 // TODO remove and replace with dtb
+// (it's only here because my memory sucks)
 
+// Chip's register definitions
+// See datasheet
 #define REG_VCELL_MSB     0x02 // R
 #define REG_VCELL_LSB     0x03 // R
 #define REG_SOC_MSB       0x04 // R
@@ -193,8 +200,8 @@ static int i2c_battery_update_measurements(struct device *dev)
   if (res != 12)
     goto bail;
   data->voltage = be16_to_cpu((values[0] << 8) | (values[1] & 0xff)); // build a big-endian u16, then make it cpu-endian
-  data->soc     = be16_to_cpu((values[2] << 8) | (values[3] & 0xff));
-  data->config  = be16_to_cpu((values[4] << 8) | (values[5] & 0xff));
+  data->soc     = be16_to_cpu((values[2] << 8) | (values[3] & 0xff)); // TODO this is still sketchy (and wrong)
+  data->config  = be16_to_cpu((values[4] << 8) | (values[5] & 0xff)); // might be reversing MSB and or'ing with LSB (not good)
   data->version = be16_to_cpu((values[6] << 8) | (values[7] & 0xff));
   data->last_update = jiffies;
   data->valid = 1;
@@ -209,9 +216,15 @@ static int i2c_battery_write_settings(struct device *dev)
 {
   // leave this as a stub until testing is done
   // if I screw up, I don't want to write garbage to the chip
+
+  // additionally, block write if `valid` is invalid
+  // lastly, will need to find a way to write mode/config/command seperate
+  // this funtion will likely disappear and be factored into `store` functions
   return 0;
 }
 
+// macro for defining sysfs read functions
+// reads all settings via `update_measurements`
 #define show(value)                                                                                     \
   static ssize_t i2c_battery_show_##value(struct device* dev, struct device_attribute *attr, char* buf) \
   {                                                                                                     \
@@ -223,6 +236,7 @@ static int i2c_battery_write_settings(struct device *dev)
     return sprintf(buf, "%d\n", data->value);                                                           \
   }
 
+// same as above, but writes
 #define store(value)                                                                                    \
   static ssize_t i2c_battery_store_##value(struct device* dev, struct device_attribute *attr, const char* buf, size_t count) \
   {                                                                                                     \
@@ -235,6 +249,8 @@ static int i2c_battery_write_settings(struct device *dev)
     return ret;                                                                                         \
   }
 
+// call these macros on appropriate data members
+// each of these is defined in i2c_battery_data
 show(voltage);
 show(soc);
 show(version);
@@ -243,6 +259,7 @@ store(config);
 store(mode);
 store(command);
 
+// define our sysfs devices
 static SENSOR_DEVICE_ATTR(in0_input, S_IRUGO,           i2c_battery_show_voltage, NULL, 0); // defines sensor_dev_attr_in0_input
 static        DEVICE_ATTR(soc,       S_IRUGO,           i2c_battery_show_soc,     NULL); // define dev_attr_soc
 static        DEVICE_ATTR(version,   S_IRUGO,           i2c_battery_show_version, NULL);
@@ -250,17 +267,20 @@ static        DEVICE_ATTR(config,    S_IRUGO | S_IWUSR, i2c_battery_show_config,
 static        DEVICE_ATTR(mode,                S_IWUSR, NULL,                     i2c_battery_store_mode);
 static        DEVICE_ATTR(command,             S_IWUSR, NULL,                     i2c_battery_store_command);
 
+// we have only one value that makes sense to hwmon (voltage)
+// expose it here
 static struct attribute* i2c_battery_attrs[] =
 {
-  &sensor_dev_attr_in0_input.dev_attr.attr, // only register in0_input with hwmon
+  &sensor_dev_attr_in0_input.dev_attr.attr,
   NULL
 };
 
 ATTRIBUTE_GROUPS(i2c_battery); // define i2c_battery_groups
 
+// initialize a client when found
 static int i2c_battery_probe(struct i2c_client* client, const struct i2c_device_id* id)
 {
-  struct device* dev = &client->dev;
+  struct device* dev = &client->dev; // i2c device
   struct device* hwmon_dev;
   struct i2c_battery_data* data;
 
@@ -269,7 +289,7 @@ static int i2c_battery_probe(struct i2c_client* client, const struct i2c_device_
     return -ENOMEM;
 
   data->client = client;
-  data->valid = 0;
+  // all fields are zero-init
   mutex_init(&data->update_lock);
   
   hwmon_dev = devm_hwmon_device_register_with_groups(dev, client->name, data, i2c_battery_groups); // register hwmon group
@@ -282,15 +302,7 @@ static int i2c_battery_probe(struct i2c_client* client, const struct i2c_device_
   return PTR_ERR_OR_ZERO(hwmon_dev);
 }
 
-// specify the address for the i2c device
-// will register with init
-static struct i2c_board_info i2c_battery_info[] =
-{
-  {
-    I2C_BOARD_INFO("i2c_battery", I2C_SLAVE_ADDRESS)
-  }
-};
-
+// name our device
 static struct i2c_device_id i2c_battery_id[] =
 {
   { "i2c_battery", 0 },
@@ -307,9 +319,9 @@ static struct i2c_driver i2c_battery_driver =
   .id_table = i2c_battery_id, // ties in above table
 };
 
+// TODO if these functions don't change, go back to module_i2c_driver
 static int __init i2c_battery_init(void)
 {
-  i2c_register_board_info(0, i2c_battery_info, ARRAY_SIZE(i2c_battery_info));
   return i2c_add_driver(&i2c_battery_driver);
 }
 
